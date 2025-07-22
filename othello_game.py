@@ -1,492 +1,342 @@
 #!/usr/bin/env python3
 """
-🎮 OTHELLO (Reversi) 8x8 - Game đánh cờ lật
-Luật chơi: Lật các quân cờ đối phương bằng cách bao vây
+🎮 OTHELLO GPT GAME - Sử dụng GPT AI từ othello_world project
 """
 
 import os
-import random
+import torch
+import numpy as np
 import time
+from data import get_othello
+from data.othello import OthelloBoardState
+from mingpt.model import GPT, GPTConfig
+from mingpt.dataset import CharDataset
+from mingpt.utils import sample
 
-class OthelloBoard:
-    def __init__(self):
-        """Khởi tạo bàn cờ 8x8"""
-        self.board = [[0 for _ in range(8)] for _ in range(8)]
-        self.current_player = 1  # 1 = Black (●), -1 = White (○)
-        
-        # Setup vị trí ban đầu
-        self.board[3][3] = -1  # White
-        self.board[3][4] = 1   # Black
-        self.board[4][3] = 1   # Black
-        self.board[4][4] = -1  # White
-        
-        self.directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
-    
-    def print_board(self):
-        """In bàn cờ ra màn hình"""
-        os.system('cls' if os.name == 'nt' else 'clear')
-        
-        print("🎮 OTHELLO (Cờ Lật) 8x8")
-        print("=" * 40)
-        print("   A B C D E F G H")
-        
-        for i in range(8):
-            row = f"{i+1}  "
-            for j in range(8):
-                if self.board[i][j] == 1:
-                    row += "● "  # Black
-                elif self.board[i][j] == -1:
-                    row += "○ "  # White
-                else:
-                    row += ". "  # Empty
-            print(row)
-        
-        # Hiển thị điểm số
-        black_count = sum(row.count(1) for row in self.board)
-        white_count = sum(row.count(-1) for row in self.board)
-        
-        print(f"\n● Black: {black_count}  ○ White: {white_count}")
-        print(f"Lượt: {'● Black' if self.current_player == 1 else '○ White'}")
-        print("=" * 40)
-    
-    def is_valid_position(self, row, col):
-        """Kiểm tra vị trí có hợp lệ không"""
-        return 0 <= row < 8 and 0 <= col < 8
-    
-    def can_flip(self, row, col, direction):
-        """Kiểm tra có thể lật quân cờ theo hướng này không"""
-        dr, dc = direction
-        r, c = row + dr, col + dc
-        found_opponent = False
-        
-        while self.is_valid_position(r, c):
-            if self.board[r][c] == 0:  # Ô trống
-                return False
-            elif self.board[r][c] == -self.current_player:  # Quân đối phương
-                found_opponent = True
-                r, c = r + dr, c + dc
-            elif self.board[r][c] == self.current_player:  # Quân của mình
-                return found_opponent
-            else:
-                return False
-        
-        return False
-    
-    def is_valid_move(self, row, col):
-        """Kiểm tra nước đi có hợp lệ không"""
-        if not self.is_valid_position(row, col) or self.board[row][col] != 0:
-            return False
-        
-        # Kiểm tra có thể lật quân nào không
-        for direction in self.directions:
-            if self.can_flip(row, col, direction):
-                return True
-        
-        return False
-    
-    def get_valid_moves(self):
-        """Lấy tất cả nước đi hợp lệ"""
-        valid_moves = []
-        for i in range(8):
-            for j in range(8):
-                if self.is_valid_move(i, j):
-                    valid_moves.append((i, j))
-        return valid_moves
-    
-    def flip_pieces(self, row, col, direction):
-        """Lật các quân cờ theo hướng"""
-        dr, dc = direction
-        r, c = row + dr, col + dc
-        pieces_to_flip = []
-        
-        while self.is_valid_position(r, c):
-            if self.board[r][c] == 0:
-                break
-            elif self.board[r][c] == -self.current_player:
-                pieces_to_flip.append((r, c))
-                r, c = r + dr, c + dc
-            elif self.board[r][c] == self.current_player:
-                # Lật tất cả quân cờ trong danh sách
-                for flip_r, flip_c in pieces_to_flip:
-                    self.board[flip_r][flip_c] = self.current_player
-                return True
-            else:
-                break
-        
-        return False
-    
-    def make_move(self, row, col):
-        """Thực hiện nước đi"""
-        if not self.is_valid_move(row, col):
-            return False
-        
-        # Đặt quân cờ
-        self.board[row][col] = self.current_player
-        
-        # Lật các quân cờ theo tất cả hướng
-        for direction in self.directions:
-            if self.can_flip(row, col, direction):
-                self.flip_pieces(row, col, direction)
-        
-        # Đổi lượt
-        self.current_player = -self.current_player
-        return True
-    
-    def is_game_over(self):
-        """Kiểm tra game đã kết thúc chưa"""
-        # Kiểm tra cả hai người chơi có nước đi không
-        player1_moves = len(self.get_valid_moves())
-        
-        self.current_player = -self.current_player
-        player2_moves = len(self.get_valid_moves())
-        self.current_player = -self.current_player
-        
-        return player1_moves == 0 and player2_moves == 0
-    
-    def get_winner(self):
-        """Xác định người thắng"""
-        black_count = sum(row.count(1) for row in self.board)
-        white_count = sum(row.count(-1) for row in self.board)
-        
-        if black_count > white_count:
-            return 1  # Black wins
-        elif white_count > black_count:
-            return -1  # White wins
+
+class OthelloGPTAI:
+    def __init__(self, checkpoint_path=None):
+        """
+        Khởi tạo Othello GPT AI sử dụng model từ othello_world
+
+        Args:
+            checkpoint_path: Đường dẫn đến checkpoint GPT model
+        """
+        print("🤖 Đang khởi tạo Othello GPT AI...")
+
+        # Load data để tạo dataset và vocab
+        print("📊 Loading championship data...")
+        othello = get_othello(data_root="data/othello_championship")
+        self.train_dataset = CharDataset(othello)
+
+        print(f"✅ Dataset: {len(self.train_dataset)} sequences")
+        print(f"✅ Vocab size: {self.train_dataset.vocab_size}")
+        print(f"✅ Block size: {self.train_dataset.block_size}")
+
+        # Tạo model config
+        mconf = GPTConfig(
+            self.train_dataset.vocab_size,
+            self.train_dataset.block_size,
+            n_layer=8,
+            n_head=8,
+            n_embd=512
+        )
+
+        self.model = GPT(mconf)
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        # Load checkpoint
+        if checkpoint_path and os.path.exists(checkpoint_path):
+            print(f"📂 Loading GPT checkpoint: {checkpoint_path}")
+            self.model.load_state_dict(torch.load(checkpoint_path, map_location=self.device))
+            print("✅ GPT model loaded successfully")
         else:
-            return 0  # Tie
+            # Thử tìm checkpoint có sẵn
+            available_checkpoints = [
+                "./ckpts/gpt_championship.ckpt",
+                "./ckpts/gpt_synthetic.ckpt",
+                "./ckpts/gpt_quick.ckpt"
+            ]
 
-class SimpleAI:
-    def __init__(self, difficulty="medium"):
-        """AI đơn giản với các mức độ khó"""
-        self.difficulty = difficulty
-    
-    def evaluate_move(self, board, row, col):
-        """Đánh giá chất lượng nước đi"""
-        score = 0
-        
-        # Ưu tiên góc (rất quan trọng)
-        corners = [(0,0), (0,7), (7,0), (7,7)]
-        if (row, col) in corners:
-            score += 100
-        
-        # Tránh vị trí cạnh góc (nguy hiểm)
-        corner_adjacent = [(0,1), (1,0), (1,1), (0,6), (1,6), (1,7), 
-                          (6,0), (6,1), (7,1), (6,6), (6,7), (7,6)]
-        if (row, col) in corner_adjacent:
-            score -= 50
-        
-        # Ưu tiên cạnh
-        if row == 0 or row == 7 or col == 0 or col == 7:
-            score += 20
-        
-        # Đếm số quân lật được
-        temp_board = [row[:] for row in board.board]
-        temp_current = board.current_player
-        
-        board.make_move(row, col)
-        flipped_count = sum(row.count(board.current_player) for row in board.board) - \
-                       sum(row.count(board.current_player) for row in temp_board)
-        score += flipped_count * 2
-        
-        # Restore board
-        board.board = temp_board
-        board.current_player = temp_current
-        
-        return score
-    
-    def choose_move(self, board):
-        """AI chọn nước đi"""
-        valid_moves = board.get_valid_moves()
-        
+            loaded = False
+            for ckpt in available_checkpoints:
+                if os.path.exists(ckpt):
+                    print(f"📂 Found checkpoint: {ckpt}")
+                    self.model.load_state_dict(torch.load(ckpt, map_location=self.device))
+                    print("✅ GPT model loaded successfully")
+                    loaded = True
+                    break
+
+            if not loaded:
+                print("⚠️  No checkpoint found, using random weights")
+                print("💡 Model sẽ chơi random, để có AI tốt hơn cần train model")
+
+        self.model.to(self.device)
+        self.model.eval()
+
+        param_count = sum(p.numel() for p in self.model.parameters())
+        print(f"🧠 GPT Model: {param_count:,} parameters")
+        print(f"💻 Device: {self.device}")
+        print("✅ Othello GPT AI ready!")
+
+    def predict_next_move(self, game_sequence, temperature=0.8, top_k=10):
+        """
+        Sử dụng GPT model để predict next move
+
+        Args:
+            game_sequence: List các moves đã chơi (integers)
+            temperature: Temperature cho sampling
+            top_k: Top-k sampling
+
+        Returns:
+            predicted_move: Move được predict (integer)
+        """
+        if len(game_sequence) == 0:
+            # First move thường ở giữa
+            return 26  # D4
+
+        # Convert sequence to tokens
+        tokens = []
+        for move in game_sequence:
+            if move in self.train_dataset.stoi:
+                tokens.append(self.train_dataset.stoi[move])
+            else:
+                # Fallback cho moves không có trong vocab
+                tokens.append(0)
+
+        # Truncate nếu quá dài
+        max_len = self.train_dataset.block_size - 1
+        if len(tokens) > max_len:
+            tokens = tokens[-max_len:]
+
+        # Convert to tensor
+        x = torch.tensor(tokens, dtype=torch.long).unsqueeze(0).to(self.device)
+
+        # Generate prediction
+        with torch.no_grad():
+            # Sample next token
+            y = sample(self.model, x, 1, temperature=temperature, sample=True, top_k=top_k)[0]
+            predicted_token = y[-1].item()
+
+            # Convert token back to move
+            predicted_move = self.train_dataset.itos.get(predicted_token, -1)
+
+            return predicted_move
+
+    def choose_best_move(self, board_state, game_sequence):
+        """
+        Chọn nước đi tốt nhất từ GPT predictions
+
+        Args:
+            board_state: OthelloBoardState object
+            game_sequence: List các moves đã chơi
+
+        Returns:
+            best_move: Nước đi được chọn (integer position)
+        """
+        valid_moves = board_state.get_valid_moves()
+
         if not valid_moves:
             return None
-        
-        if self.difficulty == "easy":
-            # Random move
-            return random.choice(valid_moves)
-        
-        elif self.difficulty == "medium":
-            # Chọn nước đi tốt nhất dựa trên evaluation
-            best_move = None
-            best_score = float('-inf')
-            
-            for row, col in valid_moves:
-                score = self.evaluate_move(board, row, col)
-                if score > best_score:
-                    best_score = score
-                    best_move = (row, col)
-            
-            return best_move
-        
-        elif self.difficulty == "hard":
-            # Minimax đơn giản (depth 2)
-            return self.minimax_move(board, valid_moves)
-    
-    def minimax_move(self, board, valid_moves):
-        """Minimax algorithm đơn giản"""
-        best_move = None
-        best_score = float('-inf')
-        
-        for row, col in valid_moves:
-            # Simulate move
-            temp_board = [row[:] for row in board.board]
-            temp_current = board.current_player
-            
-            board.make_move(row, col)
-            
-            # Evaluate opponent's best response
-            opponent_moves = board.get_valid_moves()
-            if opponent_moves:
-                worst_score = float('inf')
-                for opp_row, opp_col in opponent_moves:
-                    temp_board2 = [row[:] for row in board.board]
-                    temp_current2 = board.current_player
-                    
-                    board.make_move(opp_row, opp_col)
-                    score = self.evaluate_position(board)
-                    
-                    if score < worst_score:
-                        worst_score = score
-                    
-                    # Restore
-                    board.board = temp_board2
-                    board.current_player = temp_current2
-                
-                final_score = worst_score
-            else:
-                final_score = self.evaluate_position(board)
-            
-            if final_score > best_score:
-                best_score = final_score
-                best_move = (row, col)
-            
-            # Restore board
-            board.board = temp_board
-            board.current_player = temp_current
-        
-        return best_move
-    
-    def evaluate_position(self, board):
-        """Đánh giá tổng thể vị trí"""
-        ai_color = -1  # AI là White
-        player_color = 1  # Player là Black
-        
-        ai_count = sum(row.count(ai_color) for row in board.board)
-        player_count = sum(row.count(player_color) for row in board.board)
-        
-        return ai_count - player_count
 
-def pos_to_str(row, col):
-    """Convert position to string (e.g., (2,3) -> 'D3')"""
+        if len(valid_moves) == 1:
+            return valid_moves[0]
+
+        # Thử predict với nhiều temperature khác nhau
+        move_scores = {}
+
+        for temp in [0.5, 0.8, 1.0]:
+            for _ in range(5):  # Sample 5 lần cho mỗi temperature
+                predicted_move = self.predict_next_move(game_sequence, temperature=temp)
+
+                if predicted_move in valid_moves:
+                    if predicted_move not in move_scores:
+                        move_scores[predicted_move] = 0
+                    move_scores[predicted_move] += 1
+
+        # Chọn move có score cao nhất
+        if move_scores:
+            best_move = max(move_scores.items(), key=lambda x: x[1])[0]
+            return best_move
+
+        # Fallback: chọn random từ valid moves
+        return np.random.choice(valid_moves)
+
+
+def print_board(board_state):
+    """In bàn cờ Othello"""
+    os.system('cls' if os.name == 'nt' else 'clear')
+
+    print("🎮 OTHELLO GPT GAME")
+    print("🤖 Powered by GPT AI from othello_world")
+    print("=" * 50)
+    print("   A B C D E F G H")
+
+    for i in range(8):
+        row = f"{i + 1}  "
+        for j in range(8):
+            if board_state.state[i][j] == 1:
+                row += "● "  # Black
+            elif board_state.state[i][j] == -1:
+                row += "○ "  # White
+            else:
+                row += ". "  # Empty
+        print(row)
+
+    # Hiển thị điểm số
+    black_count = np.sum(board_state.state == 1)
+    white_count = np.sum(board_state.state == -1)
+
+    print(f"\n● Black: {black_count}  ○ White: {white_count}")
+    print(f"Next player: {'● Black' if board_state.next_hand_color == 1 else '○ White'}")
+    print("=" * 50)
+
+
+def pos_to_str(pos):
+    """Convert position to string (e.g., 26 -> 'D4')"""
+    if pos < 0 or pos >= 64:
+        return "Invalid"
+    row = pos // 8
+    col = pos % 8
     return f"{chr(ord('A') + col)}{row + 1}"
 
+
 def str_to_pos(move_str):
-    """Convert string to position (e.g., 'D3' -> (2,3))"""
+    """Convert string to position (e.g., 'D4' -> 26)"""
     if len(move_str) != 2:
-        return None
-    
+        return -1
     try:
         col = ord(move_str[0].upper()) - ord('A')
         row = int(move_str[1]) - 1
-        
         if 0 <= row < 8 and 0 <= col < 8:
-            return (row, col)
+            return row * 8 + col
     except:
         pass
-    
-    return None
+    return -1
 
-def show_rules():
-    """Hiển thị luật chơi"""
-    print("📋 LUẬT CHƠI OTHELLO (Cờ Lật)")
+
+def play_game():
+    """Main game function"""
+    print("🎮 OTHELLO GPT GAME")
     print("=" * 50)
-    print("🎯 Mục tiêu: Có nhiều quân cờ nhất khi hết ô trống")
-    print()
-    print("📜 Luật:")
-    print("1. Mỗi lượt đặt 1 quân cờ vào ô trống")
-    print("2. Phải bao vây ít nhất 1 quân đối phương")
-    print("3. Tất cả quân bị bao vây sẽ bị lật màu")
-    print("4. Nếu không có nước đi hợp lệ thì bỏ lượt")
-    print("5. Game kết thúc khi không còn ô trống hoặc cả 2 bên bỏ lượt")
-    print()
-    print("💡 Chiến thuật:")
-    print("• Ưu tiên chiếm góc (rất khó bị lật)")
-    print("• Tránh cho đối phương chiếm góc")
-    print("• Kiểm soát cạnh bàn cờ")
-    print("• Đừng chỉ tập trung vào số lượng quân")
-    print()
+    print("🤖 Sử dụng GPT AI từ othello_world project")
+    print("🧠 Model được train trên championship data")
+    print("=" * 50)
+    print("Bạn là ● (Black), GPT AI là ○ (White)")
+    print("Nhập nước đi theo format: D4, E3, etc.")
+    print("Nhập 'quit' để thoát, 'help' để xem nước đi hợp lệ")
+    print("=" * 50)
+
+    # Khởi tạo GPT AI
+    try:
+        ai = OthelloGPTAI()
+    except Exception as e:
+        print(f"❌ Lỗi khởi tạo GPT AI: {e}")
+        print("💡 Đảm bảo đã setup environment và có data")
+        return
+
+    # Khởi tạo game
+    board = OthelloBoardState()
+    game_sequence = []
+
+    print("\n🚀 Game bắt đầu!")
     input("Nhấn Enter để tiếp tục...")
 
-def main():
-    """Main game function"""
-    print("🎮 OTHELLO (Cờ Lật) 8x8")
-    print("=" * 40)
-    print("1. 👤 Chơi với AI")
-    print("2. 👥 Chơi 2 người")
-    print("3. 📋 Xem luật chơi")
-    print("4. 🚪 Thoát")
-    print("=" * 40)
-    
-    choice = input("Chọn chế độ (1-4): ").strip()
-    
-    if choice == "1":
-        play_vs_ai()
-    elif choice == "2":
-        play_two_players()
-    elif choice == "3":
-        show_rules()
-        main()
-    elif choice == "4":
-        print("👋 Tạm biệt!")
-        return
-    else:
-        print("❌ Lựa chọn không hợp lệ!")
-        time.sleep(1)
-        main()
-
-def play_vs_ai():
-    """Chơi với AI"""
-    print("\n🤖 Chọn độ khó AI:")
-    print("1. 😊 Dễ (Random)")
-    print("2. 🤔 Trung bình (Smart)")
-    print("3. 😈 Khó (Minimax)")
-    
-    difficulty_choice = input("Chọn độ khó (1-3): ").strip()
-    
-    if difficulty_choice == "1":
-        difficulty = "easy"
-    elif difficulty_choice == "2":
-        difficulty = "medium"
-    elif difficulty_choice == "3":
-        difficulty = "hard"
-    else:
-        difficulty = "medium"
-    
-    board = OthelloBoard()
-    ai = SimpleAI(difficulty)
-    
-    print(f"\n🎮 Bắt đầu game! Bạn là ● (Black), AI là ○ (White)")
-    print("💡 Nhập nước đi theo format: D3, E4, etc.")
-    print("💡 Nhập 'help' để xem nước đi hợp lệ, 'quit' để thoát")
-    
     while True:
-        board.print_board()
-        
-        if board.is_game_over():
-            winner = board.get_winner()
-            if winner == 1:
-                print("🎉 Bạn thắng!")
-            elif winner == -1:
-                print("🤖 AI thắng!")
-            else:
-                print("🤝 Hòa!")
-            break
-        
+        print_board(board)
+
+        # Kiểm tra game over
         valid_moves = board.get_valid_moves()
-        
-        # Lượt người chơi
-        if board.current_player == 1:
+        if not valid_moves:
+            # Thử đổi lượt
+            board.next_hand_color *= -1
+            valid_moves_other = board.get_valid_moves()
+            board.next_hand_color *= -1
+
+            if not valid_moves_other:
+                # Game over
+                black_count = np.sum(board.state == 1)
+                white_count = np.sum(board.state == -1)
+
+                print("\n🏁 GAME OVER!")
+                if black_count > white_count:
+                    print("🎉 ● Black (Bạn) thắng!")
+                elif white_count > black_count:
+                    print("🤖 ○ White (GPT AI) thắng!")
+                else:
+                    print("🤝 Hòa!")
+
+                print(f"Final score: ● {black_count} - {white_count} ○")
+                break
+
+        # Lượt người chơi (Black)
+        if board.next_hand_color == 1:
             if not valid_moves:
                 print("⏭️  Bạn không có nước đi hợp lệ, bỏ lượt")
-                board.current_player = -board.current_player
+                board.next_hand_color *= -1
                 input("Nhấn Enter để tiếp tục...")
                 continue
-            
+
+            print(f"Nước đi hợp lệ: {[pos_to_str(pos) for pos in valid_moves]}")
+
             while True:
-                move_input = input("Nhập nước đi: ").strip().lower()
-                
-                if move_input == 'quit':
+                move_input = input("Nhập nước đi của bạn: ").strip()
+
+                if move_input.lower() == 'quit':
                     print("👋 Tạm biệt!")
                     return
-                elif move_input == 'help':
-                    print(f"Nước đi hợp lệ: {[pos_to_str(r, c) for r, c in valid_moves]}")
+                elif move_input.lower() == 'help':
+                    print(f"Nước đi hợp lệ: {[pos_to_str(pos) for pos in valid_moves]}")
                     continue
-                
-                pos = str_to_pos(move_input)
-                if pos and pos in valid_moves:
-                    board.make_move(pos[0], pos[1])
+
+                move_pos = str_to_pos(move_input)
+                if move_pos in valid_moves:
+                    board.umpire(move_pos)
+                    game_sequence.append(move_pos)
                     print(f"✅ Bạn đã chơi {move_input.upper()}")
                     break
                 else:
-                    print("❌ Nước đi không hợp lệ! Nhập 'help' để xem nước đi hợp lệ")
-        
-        # Lượt AI
+                    print("❌ Nước đi không hợp lệ!")
+
+        # Lượt GPT AI (White)
         else:
             if not valid_moves:
-                print("⏭️  AI không có nước đi hợp lệ, bỏ lượt")
-                board.current_player = -board.current_player
+                print("⏭️  GPT AI không có nước đi hợp lệ, bỏ lượt")
+                board.next_hand_color *= -1
                 input("Nhấn Enter để tiếp tục...")
                 continue
-            
-            print("🤖 AI đang suy nghĩ...")
-            time.sleep(1)
-            
-            ai_move = ai.choose_move(board)
-            if ai_move:
-                board.make_move(ai_move[0], ai_move[1])
-                print(f"🤖 AI chọn: {pos_to_str(ai_move[0], ai_move[1])}")
-            
-            input("Nhấn Enter để tiếp tục...")
-    
-    input("Nhấn Enter để quay lại menu...")
-    main()
 
-def play_two_players():
-    """Chơi 2 người"""
-    board = OthelloBoard()
-    
-    print("\n👥 Chế độ 2 người chơi")
-    print("Player 1: ● (Black)")
-    print("Player 2: ○ (White)")
-    print("💡 Nhập nước đi theo format: D3, E4, etc.")
-    
-    while True:
-        board.print_board()
-        
-        if board.is_game_over():
-            winner = board.get_winner()
-            if winner == 1:
-                print("🎉 Player 1 (Black) thắng!")
-            elif winner == -1:
-                print("🎉 Player 2 (White) thắng!")
-            else:
-                print("🤝 Hòa!")
-            break
-        
-        valid_moves = board.get_valid_moves()
-        
-        if not valid_moves:
-            player_name = "Player 1 (Black)" if board.current_player == 1 else "Player 2 (White)"
-            print(f"⏭️  {player_name} không có nước đi hợp lệ, bỏ lượt")
-            board.current_player = -board.current_player
+            print("🤖 GPT AI đang suy nghĩ...")
+            time.sleep(1.5)  # Tạo cảm giác AI đang "suy nghĩ"
+
+            try:
+                ai_move = ai.choose_best_move(board, game_sequence)
+                if ai_move is not None and ai_move in valid_moves:
+                    board.umpire(ai_move)
+                    game_sequence.append(ai_move)
+                    print(f"🤖 GPT AI chọn: {pos_to_str(ai_move)}")
+                else:
+                    # Fallback nếu GPT prediction không hợp lệ
+                    fallback_move = np.random.choice(valid_moves)
+                    board.umpire(fallback_move)
+                    game_sequence.append(fallback_move)
+                    print(f"🤖 GPT AI chọn: {pos_to_str(fallback_move)} (fallback)")
+            except Exception as e:
+                print(f"⚠️  GPT AI error: {e}")
+                # Fallback to random
+                fallback_move = np.random.choice(valid_moves)
+                board.umpire(fallback_move)
+                game_sequence.append(fallback_move)
+                print(f"🤖 AI chọn: {pos_to_str(fallback_move)} (random fallback)")
+
             input("Nhấn Enter để tiếp tục...")
-            continue
-        
-        player_name = "Player 1 (●)" if board.current_player == 1 else "Player 2 (○)"
-        print(f"Lượt {player_name}")
-        print(f"Nước đi hợp lệ: {[pos_to_str(r, c) for r, c in valid_moves]}")
-        
-        while True:
-            move_input = input("Nhập nước đi: ").strip().lower()
-            
-            if move_input == 'quit':
-                print("👋 Tạm biệt!")
-                return
-            
-            pos = str_to_pos(move_input)
-            if pos and pos in valid_moves:
-                board.make_move(pos[0], pos[1])
-                print(f"✅ {player_name} đã chơi {move_input.upper()}")
-                break
-            else:
-                print("❌ Nước đi không hợp lệ!")
-    
-    input("Nhấn Enter để quay lại menu...")
-    main()
+
+    input("Nhấn Enter để thoát...")
+
 
 if __name__ == '__main__':
     try:
-        main()
+        play_game()
     except KeyboardInterrupt:
         print("\n👋 Tạm biệt!")
     except Exception as e:
